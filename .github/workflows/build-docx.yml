@@ -1,16 +1,20 @@
 name: Build Word doc
 
 # Non-technical workflow: open the Actions tab on GitHub, click "Build Word doc"
-# -> "Run workflow", pick a chapter from the dropdown, and click the green
-# button. When it finishes, download the .docx from the run's "Artifacts"
-# section. No terminal, no local install.
+# -> "Run workflow", paste a chapter URL, and click the green button. When it
+# finishes (~1 min), download the .docx from the run's "Artifacts" section.
+# No terminal, no local install, no YAML to edit.
 
 on:
   workflow_dispatch:
     inputs:
+      url:
+        description: "Chapter landing-page URL (the tool finds its sub-pages automatically)"
+        required: false
+        type: string
       manifest:
-        description: "Which review set to convert"
-        required: true
+        description: "...or leave the URL blank and pick a saved review set"
+        required: false
         type: choice
         default: examples/before-you-deploy-chapter.yml
         options:
@@ -40,7 +44,18 @@ jobs:
         run: python scripts/make_reference.py styles.docx
 
       - name: Convert to Word
-        run: python -m web2word "${{ inputs.manifest }}" -o review-document.docx -v
+        # URL and manifest come in as env vars (not inlined into the script) to
+        # avoid shell-injection from the free-text URL input.
+        env:
+          URL: ${{ inputs.url }}
+          MANIFEST: ${{ inputs.manifest }}
+        run: |
+          if [ -n "$URL" ]; then
+            python -m web2word "$URL" -o review-document.docx \
+              --save-manifest discovered-manifest.yml -v
+          else
+            python -m web2word "$MANIFEST" -o review-document.docx -v
+          fi
 
       - name: Verify links (fails if any internal link is dead)
         run: python scripts/verify.py review-document.docx
@@ -50,3 +65,11 @@ jobs:
         with:
           name: review-document
           path: review-document.docx
+
+      - name: Upload the discovered manifest (when a URL was used)
+        if: ${{ inputs.url != '' }}
+        uses: actions/upload-artifact@v4
+        with:
+          name: discovered-manifest
+          path: discovered-manifest.yml
+          if-no-files-found: ignore

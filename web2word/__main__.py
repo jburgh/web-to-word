@@ -51,16 +51,41 @@ def _mini_yaml(text: str) -> dict:
     return data
 
 
+def _manifest_from_url(url: str, verbose: bool) -> Manifest:
+    from .discover import build_manifest as discover_manifest
+    if verbose:
+        print(f"discovering pages under {url} ...")
+    data = discover_manifest(url)
+    return Manifest(
+        base_url=data["base_url"],
+        pages=data["pages"],
+        output=data["output"],
+        style_reference=data["style_reference"],
+    )
+
+
 def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="web2word", description=__doc__)
-    ap.add_argument("manifest", help="path to a manifest .yml")
+    ap.add_argument("source", help="a manifest .yml file, OR a chapter URL to auto-discover")
     ap.add_argument("-o", "--output", help="override output path")
+    ap.add_argument("--save-manifest", metavar="PATH",
+                    help="when SOURCE is a URL, also write the discovered manifest here")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
-    manifest = _load_manifest(args.manifest)
+    is_url = args.source.lower().startswith(("http://", "https://"))
+    manifest = _manifest_from_url(args.source, args.verbose) if is_url else _load_manifest(args.source)
     if args.output:
         manifest.output = args.output
+
+    if is_url and args.save_manifest:
+        from .discover import to_yaml
+        Path(args.save_manifest).write_text(to_yaml({
+            "base_url": manifest.base_url, "output": manifest.output,
+            "style_reference": manifest.style_reference or "styles.docx",
+            "pages": manifest.pages,
+        }), encoding="utf-8")
+        print(f"wrote manifest: {args.save_manifest}")
 
     print(f"web2word: {len(manifest.pages)} page(s) -> {manifest.output}")
     out = build(manifest, verbose=args.verbose)

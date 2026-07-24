@@ -19,13 +19,16 @@ There are two ways to use it, depending on who you are.
 
 1. On GitHub, open the **Actions** tab.
 2. Click **Build Word doc** in the left sidebar, then **Run workflow**.
-3. Pick a chapter from the dropdown and click the green **Run workflow** button.
+3. **Paste a chapter's landing-page URL** (the tool finds its sub-pages on its
+   own) and click the green **Run workflow** button.
 4. When the run finishes (~1 min), open it and download the `.docx` from the
    **Artifacts** section at the bottom.
 
-No terminal, no Python, no Pandoc. The list of available chapters is the
-dropdown in `.github/workflows/build-docx.yml`; a maintainer adds a manifest and
-a dropdown entry when a new chapter needs to be reviewable.
+No terminal, no Python, no Pandoc, and **no YAML to edit** — paste a URL and go.
+The run also produces a `discovered-manifest.yml` artifact; if you want to keep a
+chapter as a named, reusable review set, commit that file to `examples/` and add
+it to the dropdown in `.github/workflows/build-docx.yml` (leaving the URL blank
+then picks it from the list).
 
 ### For maintainers — locally
 
@@ -58,7 +61,14 @@ absolute-path) are all normalized to one canonical key before matching.
 # 1. (once) build a styled reference document resembling the site
 python scripts/make_reference.py styles.docx
 
-# 2. convert a chapter (manifest points at styles.docx via style_reference:)
+# 2a. convert a chapter straight from a URL (auto-discovers its sub-pages)
+python -m web2word "https://<site>/docs/before-you-deploy.html" -o chapter.docx
+
+#     ...optionally save the discovered page list as a reusable manifest:
+python -m web2word "https://<site>/docs/before-you-deploy.html" \
+    -o chapter.docx --save-manifest examples/before-you-deploy-chapter.yml
+
+# 2b. or convert a saved manifest (points at styles.docx via style_reference:)
 python -m web2word examples/before-you-deploy-chapter.yml -v
 ```
 

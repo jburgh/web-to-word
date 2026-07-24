@@ -17,3 +17,4 @@ jtd.css
 # macOS / editor
 .DS_Store
 .claude/settings.local.json
+.vscode/
