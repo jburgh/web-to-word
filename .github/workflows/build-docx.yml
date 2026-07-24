@@ -23,10 +23,13 @@ jobs:
         with:
           python-version: "3.11"
 
-      - name: Install Pandoc
+      - name: Install Pandoc (pinned — must match the version the styling was
+              validated against; distro apt ships an older reference.docx)
         run: |
-          sudo apt-get update
-          sudo apt-get install -y pandoc
+          curl -fsSL -o /tmp/pandoc.deb \
+            https://github.com/jgm/pandoc/releases/download/3.9.0.2/pandoc-3.9.0.2-1-amd64.deb
+          sudo dpkg -i /tmp/pandoc.deb
+          pandoc --version | head -1
 
       - name: Install Python dependencies
         run: pip install -r requirements.txt

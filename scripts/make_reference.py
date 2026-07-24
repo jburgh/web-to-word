@@ -27,14 +27,11 @@ import zipfile
 BODY_FONT = "Segoe UI"          # Word's closest ubiquitous match for system-ui
 HEADING_COLOR = "1A1A1A"        # site h1 color
 LINK_COLOR = "005DAA"           # site .main-content a color (CDC blue)
-# Pandoc's default accent colors, matched with \s+ so embedded newlines/indent
-# in the source XML don't defeat the replacement.
-HEADING_ACCENT_RE = re.compile(r'<w:color\s+w:val="0F4761"\s+w:themeColor="accent1"\s+w:themeShade="BF"\s*/>')
-LINK_ACCENT_RE = re.compile(r'<w:color\s+w:val="4F81BD"\s+w:themeColor="accent1"\s*/>')
 
-# Heading 2/3 share this spacing; widen the space above (before) for breathing room.
-HEADING_SPACING_OLD = '<w:spacing w:before="160" w:after="80" />'
-HEADING_SPACING_NEW = '<w:spacing w:before="340" w:after="100" />'
+# NOTE: patches match by STRUCTURE (which style, which element), never by the
+# specific default font/color values, because those differ across Pandoc
+# versions. build_reference() then VERIFIES the result and fails loudly if any
+# patch didn't take — a silent no-op previously shipped an unstyled document.
 
 TABLE_BORDER_COLOR = "B3B3B3"   # mid-gray cell borders
 TABLE_HEADER_FILL = "F0F0F0"    # light gray header row shading
@@ -59,10 +56,82 @@ def _default_reference() -> bytes:
 
 
 def _patch_theme(xml: str) -> str:
-    # Replace the major (heading) and minor (body) latin typefaces.
-    xml = xml.replace('typeface="Aptos Display"', f'typeface="{BODY_FONT}"')
-    xml = xml.replace('typeface="Aptos"', f'typeface="{BODY_FONT}"')
+    """Set the major (heading) and minor (body) Latin typefaces to BODY_FONT,
+    whatever the default happens to be (Aptos, Calibri, etc.)."""
+    xml, n_major = re.subn(
+        r'(<a:majorFont>\s*<a:latin\s+typeface=")[^"]*(")',
+        rf"\g<1>{BODY_FONT}\g<2>", xml, count=1)
+    xml, n_minor = re.subn(
+        r'(<a:minorFont>\s*<a:latin\s+typeface=")[^"]*(")',
+        rf"\g<1>{BODY_FONT}\g<2>", xml, count=1)
+    if not (n_major and n_minor):
+        raise SystemExit(
+            f"make_reference: could not set theme fonts "
+            f"(major matched={n_major}, minor matched={n_minor}); "
+            f"the Pandoc reference theme structure changed.")
     return xml
+
+
+def _set_or_insert(block: str, element_re: str, replacement: str, insert_after: str) -> str:
+    """Replace the first match of element_re in block, or insert `replacement`
+    right after the first `insert_after` if the element is absent."""
+    if re.search(element_re, block):
+        return re.sub(element_re, replacement, block, count=1)
+    return re.sub(re.escape(insert_after), insert_after + replacement, block, count=1)
+
+
+def _patch_heading_colors(xml: str) -> str:
+    """Force every Heading1..9 paragraph style to HEADING_COLOR."""
+    def repl(m: re.Match) -> str:
+        return _set_or_insert(
+            m.group(0), r"<w:color\b[^>]*/>",
+            f'<w:color w:val="{HEADING_COLOR}" />', "<w:rPr>")
+    xml, n = re.subn(
+        r'<w:style w:type="paragraph"[^>]*w:styleId="Heading[1-9]"[^>]*>.*?</w:style>',
+        repl, xml, flags=re.S)
+    if not n:
+        raise SystemExit("make_reference: no Heading1..9 styles found to recolor.")
+    return xml
+
+
+def _patch_hyperlink(xml: str) -> str:
+    """Recolor the Hyperlink character style and add an underline."""
+    def repl(m: re.Match) -> str:
+        block = m.group(0)
+        if "<w:rPr>" not in block:
+            return block.replace(
+                "</w:style>",
+                f'<w:rPr><w:color w:val="{LINK_COLOR}" /><w:u w:val="single" /></w:rPr></w:style>')
+        block = _set_or_insert(
+            block, r"<w:color\b[^>]*/>",
+            f'<w:color w:val="{LINK_COLOR}" />', "<w:rPr>")
+        if "<w:u " not in block:
+            block = block.replace("<w:rPr>", '<w:rPr><w:u w:val="single" />', 1)
+        return block
+    xml, n = re.subn(
+        r'<w:style w:type="character"[^>]*w:styleId="Hyperlink"[^>]*>.*?</w:style>',
+        repl, xml, flags=re.S)
+    if not n:
+        raise SystemExit("make_reference: Hyperlink style not found.")
+    return xml
+
+
+def _patch_heading_spacing(xml: str) -> str:
+    """Widen the space above H2/H3 (cosmetic; best-effort, not asserted)."""
+    def repl(m: re.Match) -> str:
+        block = m.group(0)
+        def sp(mm: re.Match) -> str:
+            s = mm.group(0)
+            if "w:before=" in s:
+                return re.sub(r'w:before="\d+"', 'w:before="340"', s)
+            return s.replace("<w:spacing", '<w:spacing w:before="340"')
+        if re.search(r"<w:spacing\b[^>]*/>", block):
+            return re.sub(r"<w:spacing\b[^>]*/>", sp, block, count=1)
+        return re.sub(r"(<w:pPr>)", r'\g<1><w:spacing w:before="340" w:after="100" />',
+                      block, count=1)
+    return re.sub(
+        r'<w:style w:type="paragraph"[^>]*w:styleId="Heading[23]"[^>]*>.*?</w:style>',
+        repl, xml, flags=re.S)
 
 
 def _callout_style(style_id: str, fill: str, bar: str) -> str:
@@ -112,20 +181,16 @@ def _sourcecode_style() -> str:
 
 
 def _patch_styles(xml: str) -> str:
-    # Heading color: only headings carry the 0F4761 accent, so this is precise.
-    xml = HEADING_ACCENT_RE.sub(f'<w:color w:val="{HEADING_COLOR}" />', xml)
-    # Hyperlink style: recolor and add an underline so links read as links.
-    xml = LINK_ACCENT_RE.sub(
-        f'<w:color w:val="{LINK_COLOR}" /><w:u w:val="single" />', xml
-    )
-    # More space above H2/H3 (this spacing string is unique to those two styles).
-    xml = xml.replace(HEADING_SPACING_OLD, HEADING_SPACING_NEW)
+    xml = _patch_heading_colors(xml)      # near-black headings
+    xml = _patch_hyperlink(xml)           # CDC-blue underlined links
+    xml = _patch_heading_spacing(xml)     # more space above H2/H3
 
     # Code font size. Pandoc styles code runs (both inline and block) with the
     # VerbatimChar character style, whose run props OVERRIDE the SourceCode
-    # paragraph style. So the size must be set HERE to take effect. 18 = 9pt.
+    # paragraph style, so the size must be set HERE to take effect. 18 = 9pt.
     def _patch_verbatim(m: re.Match) -> str:
-        return m.group(0).replace('<w:sz w:val="22" />', '<w:sz w:val="18" />')
+        return _set_or_insert(
+            m.group(0), r"<w:sz\b[^>]*/>", '<w:sz w:val="18" />', "<w:rPr>")
 
     xml = re.sub(
         r'<w:style [^>]*w:styleId="VerbatimChar".*?</w:style>',
@@ -176,18 +241,53 @@ def _patch_styles(xml: str) -> str:
     return xml
 
 
+def _verify(theme_xml: str, styles_xml: str) -> None:
+    """Fail loudly if any expected styling is missing from the patched XML.
+
+    A silent patch no-op (e.g. from a Pandoc version whose reference differs)
+    previously shipped an unstyled document; this turns that into a hard error.
+    """
+    problems = []
+    if f'typeface="{BODY_FONT}"' not in theme_xml:
+        problems.append(f"body/heading font '{BODY_FONT}' not set in theme")
+    if f'<w:color w:val="{HEADING_COLOR}" />' not in styles_xml:
+        problems.append(f"heading color #{HEADING_COLOR} not applied")
+    if f'<w:color w:val="{LINK_COLOR}" />' not in styles_xml:
+        problems.append(f"hyperlink color #{LINK_COLOR} not applied")
+    if "<w:u " not in styles_xml:
+        problems.append("hyperlink underline not applied")
+    for sid in (*CALLOUTS, "SourceCode"):
+        if f'w:styleId="{sid}"' not in styles_xml:
+            problems.append(f"style '{sid}' missing")
+    if "<w:tblBorders>" not in styles_xml:
+        problems.append("table cell borders not applied")
+    if problems:
+        raise SystemExit(
+            "make_reference: reference document is not styled correctly:\n  - "
+            + "\n  - ".join(problems)
+            + "\n(likely a Pandoc version whose reference.docx differs from the "
+              "one this script targets — pin Pandoc or update the patcher.)")
+
+
 def build_reference(out_path: str) -> str:
     src = _default_reference()
     zin = zipfile.ZipFile(io.BytesIO(src))
 
+    theme_xml = styles_xml = None
     patched: dict[str, bytes] = {}
     for name in zin.namelist():
         data = zin.read(name)
         if name == "word/theme/theme1.xml":
-            data = _patch_theme(data.decode("utf-8")).encode("utf-8")
+            theme_xml = _patch_theme(data.decode("utf-8"))
+            data = theme_xml.encode("utf-8")
         elif name == "word/styles.xml":
-            data = _patch_styles(data.decode("utf-8")).encode("utf-8")
+            styles_xml = _patch_styles(data.decode("utf-8"))
+            data = styles_xml.encode("utf-8")
         patched[name] = data
+
+    if theme_xml is None or styles_xml is None:
+        raise SystemExit("make_reference: reference.docx missing theme or styles part.")
+    _verify(theme_xml, styles_xml)
 
     with zipfile.ZipFile(out_path, "w", zipfile.ZIP_DEFLATED) as zout:
         for name, data in patched.items():

@@ -107,42 +107,47 @@ def _map_callouts(container) -> None:
     from bs4 import BeautifulSoup as _BS
     dummy = _BS("", "lxml")
 
-    def _wrap(el, style):
-        wrapper = dummy.new_tag("div")
-        wrapper["custom-style"] = style
-        el.insert_before(wrapper)
-        wrapper.append(el.extract())
-        return wrapper
-
     def _bold_inline(el):
         strong = dummy.new_tag("strong")
         for child in list(el.contents):
             strong.append(child.extract())
         el.append(strong)
 
-    # Title variants first: unwrap the blockquote into the styled div and bold
-    # the first paragraph (the custom label).
-    for cls, style in CALLOUT_TITLE_VARIANTS.items():
-        for bq in container.select(f"blockquote.{cls}, p.{cls}"):
-            wrapper = dummy.new_tag("div")
-            wrapper["custom-style"] = style
-            bq.insert_before(wrapper)
-            paras = bq.find_all("p", recursive=False) or [bq]
-            for i, p in enumerate(paras):
-                if i == 0:
-                    _bold_inline(p)
-                wrapper.append(p.extract())
-            if bq.name == "blockquote":
-                bq.decompose()
+    def _first_p(el):
+        return el.find("p", recursive=False) if el.name == "blockquote" else el
 
-    # Base types: wrap and prepend a bold label (except highlight).
+    def _make_callout(el, style, *, label=None, title=False):
+        """Wrap a callout element in <div custom-style=...>. A <blockquote> is
+        UNWRAPPED (its blocks moved into the div) so Pandoc applies the paragraph
+        style to each paragraph directly instead of treating it as a quote."""
+        wrapper = dummy.new_tag("div")
+        wrapper["custom-style"] = style
+        el.insert_before(wrapper)
+
+        head = _first_p(el)
+        if label and head is not None:
+            lab = dummy.new_tag("strong")
+            lab.string = f"{label}: "
+            head.insert(0, lab)
+        if title and head is not None:
+            _bold_inline(head)
+
+        if el.name == "blockquote":
+            for child in list(el.children):   # move ALL nodes (preserve content)
+                wrapper.append(child.extract())
+            el.decompose()
+        else:
+            wrapper.append(el.extract())
+
+    # Title variants first (their first paragraph is a custom label to bold).
+    for cls, style in CALLOUT_TITLE_VARIANTS.items():
+        for el in container.select(f"p.{cls}, blockquote.{cls}"):
+            _make_callout(el, style, title=True)
+
+    # Base types: prepend a bold type label (except highlight, which has none).
     for cls, (style, label) in CALLOUT_TYPES.items():
         for el in container.select(f"p.{cls}, blockquote.{cls}"):
-            if label:
-                lab = dummy.new_tag("strong")
-                lab.string = f"{label}: "
-                el.insert(0, lab)
-            _wrap(el, style)
+            _make_callout(el, style, label=label)
 
 
 def extract_content(html: str) -> BeautifulSoup:
