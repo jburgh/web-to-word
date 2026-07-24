@@ -25,6 +25,7 @@ import sys
 import zipfile
 
 BODY_FONT = "Segoe UI"          # Word's closest ubiquitous match for system-ui
+BODY_SIZE = "22"                # half-points -> 11pt body text
 HEADING_COLOR = "1A1A1A"        # site h1 color
 LINK_COLOR = "005DAA"           # site .main-content a color (CDC blue)
 
@@ -78,6 +79,20 @@ def _set_or_insert(block: str, element_re: str, replacement: str, insert_after: 
     if re.search(element_re, block):
         return re.sub(element_re, replacement, block, count=1)
     return re.sub(re.escape(insert_after), insert_after + replacement, block, count=1)
+
+
+def _patch_body_size(xml: str) -> str:
+    """Set the document-default font size (body text inherits it). Headings and
+    code override their own size, so only body/callout text is affected."""
+    def repl(m: re.Match) -> str:
+        block = m.group(0)
+        block = re.sub(r'<w:sz w:val="\d+"\s*/>', f'<w:sz w:val="{BODY_SIZE}" />', block)
+        block = re.sub(r'<w:szCs w:val="\d+"\s*/>', f'<w:szCs w:val="{BODY_SIZE}" />', block)
+        return block
+    xml, n = re.subn(r"<w:rPrDefault>.*?</w:rPrDefault>", repl, xml, flags=re.S)
+    if not n:
+        raise SystemExit("make_reference: docDefaults rPrDefault not found for body size.")
+    return xml
 
 
 def _patch_heading_colors(xml: str) -> str:
@@ -181,6 +196,7 @@ def _sourcecode_style() -> str:
 
 
 def _patch_styles(xml: str) -> str:
+    xml = _patch_body_size(xml)           # 11pt body text
     xml = _patch_heading_colors(xml)      # near-black headings
     xml = _patch_hyperlink(xml)           # CDC-blue underlined links
     xml = _patch_heading_spacing(xml)     # more space above H2/H3
@@ -250,6 +266,8 @@ def _verify(theme_xml: str, styles_xml: str) -> None:
     problems = []
     if f'typeface="{BODY_FONT}"' not in theme_xml:
         problems.append(f"body/heading font '{BODY_FONT}' not set in theme")
+    if f'<w:sz w:val="{BODY_SIZE}" />' not in styles_xml:
+        problems.append(f"body size {BODY_SIZE} half-pt not applied")
     if f'<w:color w:val="{HEADING_COLOR}" />' not in styles_xml:
         problems.append(f"heading color #{HEADING_COLOR} not applied")
     if f'<w:color w:val="{LINK_COLOR}" />' not in styles_xml:
