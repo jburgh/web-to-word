@@ -6,7 +6,7 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin
+from urllib.parse import urljoin, urlsplit
 
 from .extract import extract_content, fetch, read_local
 from .links import ScopeSet
@@ -28,6 +28,7 @@ class Manifest:
     output: str = "output.docx"
     style_reference: str | None = None
     local_dir: str | None = None   # if set, read pages from disk instead of HTTP
+    public_host: str | None = None  # public origin to rewrite crawl-origin links to
 
     def page_urls(self) -> list[str]:
         return [urljoin(self.base_url, p) for p in self.pages]
@@ -38,6 +39,10 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
 
     # Build the scope set first so links on page 1 can resolve to page 5.
     scope = ScopeSet()
+    if manifest.public_host:
+        origin = urlsplit(manifest.base_url)
+        scope.rewrite_from = f"{origin.scheme}://{origin.netloc}"
+        scope.rewrite_to = manifest.public_host.rstrip("/")
     slugs: list[str] = []
     for url in urls:
         slug = slugify(url)

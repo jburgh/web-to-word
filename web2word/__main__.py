@@ -70,6 +70,9 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("-o", "--output", help="override output path")
     ap.add_argument("--style-reference", metavar="PATH",
                     help="reference .docx that controls fonts/styles (overrides the manifest)")
+    ap.add_argument("--public-host", metavar="ORIGIN",
+                    help="public origin (e.g. https://example.github.io) to rewrite "
+                         "out-of-scope links to when crawling a local build (localhost)")
     ap.add_argument("--save-manifest", metavar="PATH",
                     help="when SOURCE is a URL, also write the discovered manifest here")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -81,6 +84,8 @@ def main(argv: list[str] | None = None) -> int:
         manifest.output = args.output
     if args.style_reference:
         manifest.style_reference = args.style_reference
+    if args.public_host:
+        manifest.public_host = args.public_host
 
     if is_url and args.save_manifest:
         from .discover import to_yaml

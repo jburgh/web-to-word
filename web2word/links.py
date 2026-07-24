@@ -50,6 +50,11 @@ class ScopeSet:
     """
 
     _by_canonical: dict[str, str] = field(default_factory=dict)
+    # When crawling a locally-served build (e.g. http://127.0.0.1:4000/...),
+    # out-of-scope links must point at the PUBLIC site instead of localhost.
+    # rewrite_from is the crawl origin, rewrite_to the public origin.
+    rewrite_from: str | None = None
+    rewrite_to: str | None = None
 
     def add(self, url: str, slug: str) -> None:
         self._by_canonical[canonical(url)] = slug
@@ -59,6 +64,13 @@ class ScopeSet:
 
     def __contains__(self, url: str) -> bool:
         return canonical(url) in self._by_canonical
+
+    def externalize(self, url: str) -> str:
+        """Rewrite a same-site (crawl-origin) URL to its public equivalent.
+        Truly external URLs (a different origin) are returned unchanged."""
+        if self.rewrite_from and self.rewrite_to and url.startswith(self.rewrite_from):
+            return self.rewrite_to + url[len(self.rewrite_from):]
+        return url
 
 
 def namespace_anchor(slug: str, anchor: str) -> str:
@@ -102,5 +114,6 @@ def resolve_link(raw_href: str, *, page_url: str, page_slug: str, scope: ScopeSe
         # namespaced anchor; no fragment means link to the page's top.
         return ResolvedLink("#" + namespace_anchor(target_slug, frag), internal=True)
 
-    # Out of scope -> point at the live web destination (absolute URL).
-    return ResolvedLink(absolute, internal=False)
+    # Out of scope -> point at the live web destination, rewriting a locally
+    # served origin to the public site so the link works outside the build.
+    return ResolvedLink(scope.externalize(absolute), internal=False)
