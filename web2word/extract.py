@@ -1,0 +1,175 @@
+"""Fetch a page and isolate its real content from the site chrome."""
+
+from __future__ import annotations
+
+import urllib.request
+
+from bs4 import BeautifulSoup
+
+# Content container selectors, most-specific first. Just the Docs (the theme the
+# NBS 7 guide uses) puts body content in #main-content; the others are sensible
+# fallbacks for other Jekyll themes.
+CONTENT_SELECTORS = [
+    "#main-content",
+    "main.main-content",
+    "article.post-content",
+    "main",
+    "article",
+]
+
+# Elements that are navigation/chrome even when they live inside the content
+# container (breadcrumbs, "edit this page", auto-generated child-page lists that
+# a theme appends, etc.). Tuned conservatively.
+CHROME_SELECTORS = [
+    "nav",
+    ".breadcrumb-nav",
+    ".aux-nav",
+    ".site-footer",
+    "footer",             # Just the Docs nests a mobile footer (the "This site
+                          # uses Just the Docs..." tagline) inside #main-content
+    "button",
+    "a.anchor-heading",   # Just the Docs decorative heading-link icon
+    "svg.anchor-heading-icon",
+    ".anchor-heading",
+]
+
+# Just the Docs callout types -> (Word paragraph style, injected label). The
+# label is CSS-generated on the site (not in the HTML), so we add it back so the
+# Word callout is as recognizable as the rendered page. `highlight` has no label
+# by design. Styles are defined in the styled reference doc.
+CALLOUT_TYPES = {
+    "note": ("Note", "Note"),
+    "important": ("Important", "Important"),
+    "warning": ("Warning", "Warning"),
+    "new": ("New", "New"),
+    "highlight": ("Highlight", None),
+}
+# `-title` variants are blockquotes whose first paragraph is a custom label; they
+# reuse the base type's box style.
+CALLOUT_TITLE_VARIANTS = {
+    "note-title": "Note",
+    "important-title": "Important",
+    "warning-title": "Warning",
+    "new-title": "New",
+}
+
+
+def fetch(url: str, *, timeout: int = 30) -> str:
+    req = urllib.request.Request(url, headers={"User-Agent": "web2word/0.1"})
+    with urllib.request.urlopen(req, timeout=timeout) as resp:
+        return resp.read().decode("utf-8", errors="replace")
+
+
+def read_local(path: str) -> str:
+    with open(path, encoding="utf-8", errors="replace") as fh:
+        return fh.read()
+
+
+def _strip_child_page_toc(container) -> None:
+    """Remove Jekyll's auto-generated end-of-page "Table of contents".
+
+    On Just the Docs parent pages this is a ``<hr>`` + ``<h2 class="text-delta">
+    Table of contents</h2>`` + a ``<ul>`` list of child pages. It is generated
+    navigation, not authored content, and the user does not want it.
+
+    The in-page "On this page" TOC uses the same ``text-delta`` class but a
+    different heading text (and an ``id="markdown-toc"`` list), so matching on
+    the heading text keeps it untouched.
+    """
+    for h in container.find_all(["h1", "h2", "h3", "h4"]):
+        if h.get_text(strip=True).lower() != "table of contents":
+            continue
+        # Remove the list that follows the heading, then the heading, then a
+        # trailing/leading <hr> that framed the section.
+        nxt = h.find_next_sibling()
+        prev = h.find_previous_sibling()
+        if nxt is not None and nxt.name in ("ul", "ol"):
+            nxt.decompose()
+        if prev is not None and prev.name == "hr":
+            prev.decompose()
+        h.decompose()
+
+
+def _map_callouts(container) -> None:
+    """Wrap Just the Docs callouts so Pandoc styles them as boxed admonitions.
+
+    Callouts are authored as ``<p class="note">`` (base) or
+    ``<blockquote class="note-title">`` (custom-title variant). Pandoc's AST
+    drops classes on plain paragraphs, and ``custom-style`` only takes effect on
+    a ``<div>``, so we wrap each callout in a ``<div custom-style="Note">`` that
+    maps to a boxed/shaded paragraph style in the reference doc.
+
+    Selection is restricted to ``p``/``blockquote`` on purpose: Rouge wraps code
+    blocks in ``<div class="highlight">``, which must NOT be treated as a
+    highlight callout. Authored text is preserved verbatim; the only added text
+    is the type label (e.g. "Note:"), which the site shows via CSS.
+    """
+    from bs4 import BeautifulSoup as _BS
+    dummy = _BS("", "lxml")
+
+    def _wrap(el, style):
+        wrapper = dummy.new_tag("div")
+        wrapper["custom-style"] = style
+        el.insert_before(wrapper)
+        wrapper.append(el.extract())
+        return wrapper
+
+    def _bold_inline(el):
+        strong = dummy.new_tag("strong")
+        for child in list(el.contents):
+            strong.append(child.extract())
+        el.append(strong)
+
+    # Title variants first: unwrap the blockquote into the styled div and bold
+    # the first paragraph (the custom label).
+    for cls, style in CALLOUT_TITLE_VARIANTS.items():
+        for bq in container.select(f"blockquote.{cls}, p.{cls}"):
+            wrapper = dummy.new_tag("div")
+            wrapper["custom-style"] = style
+            bq.insert_before(wrapper)
+            paras = bq.find_all("p", recursive=False) or [bq]
+            for i, p in enumerate(paras):
+                if i == 0:
+                    _bold_inline(p)
+                wrapper.append(p.extract())
+            if bq.name == "blockquote":
+                bq.decompose()
+
+    # Base types: wrap and prepend a bold label (except highlight).
+    for cls, (style, label) in CALLOUT_TYPES.items():
+        for el in container.select(f"p.{cls}, blockquote.{cls}"):
+            if label:
+                lab = dummy.new_tag("strong")
+                lab.string = f"{label}: "
+                el.insert(0, lab)
+            _wrap(el, style)
+
+
+def extract_content(html: str) -> BeautifulSoup:
+    """Return a soup containing just the main content region, chrome removed."""
+    soup = BeautifulSoup(html, "lxml")
+
+    container = None
+    for sel in CONTENT_SELECTORS:
+        container = soup.select_one(sel)
+        if container is not None:
+            break
+    if container is None:
+        container = soup.body or soup
+
+    for sel in CHROME_SELECTORS:
+        for el in container.select(sel):
+            el.decompose()
+
+    _strip_child_page_toc(container)
+    _map_callouts(container)
+
+    # Flatten HTML5 sectioning wrappers. Pandoc's HTML reader treats <main>,
+    # <section>, etc. specially and, when they wrap our per-page anchor div, it
+    # discards that div's id (and with it the page's "top" bookmark). Unwrapping
+    # keeps their children while removing the element itself.
+    for tag_name in ("main", "section", "article"):
+        for el in container.find_all(tag_name):
+            el.unwrap()
+
+    return BeautifulSoup(container.decode(), "lxml")

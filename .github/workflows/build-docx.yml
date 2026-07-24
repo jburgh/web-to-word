@@ -1,0 +1,52 @@
+name: Build Word doc
+
+# Non-technical workflow: open the Actions tab on GitHub, click "Build Word doc"
+# -> "Run workflow", pick a chapter from the dropdown, and click the green
+# button. When it finishes, download the .docx from the run's "Artifacts"
+# section. No terminal, no local install.
+
+on:
+  workflow_dispatch:
+    inputs:
+      manifest:
+        description: "Which review set to convert"
+        required: true
+        type: choice
+        default: examples/before-you-deploy-chapter.yml
+        options:
+          - examples/before-you-deploy-chapter.yml
+          - examples/before-you-deploy.yml
+          - examples/data-processing.yml
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.11"
+
+      - name: Install Pandoc
+        run: |
+          sudo apt-get update
+          sudo apt-get install -y pandoc
+
+      - name: Install Python dependencies
+        run: pip install -r requirements.txt
+
+      - name: Build styled reference document
+        run: python scripts/make_reference.py styles.docx
+
+      - name: Convert to Word
+        run: python -m web2word "${{ inputs.manifest }}" -o review-document.docx -v
+
+      - name: Verify links (fails if any internal link is dead)
+        run: python scripts/verify.py review-document.docx
+
+      - name: Upload the Word document
+        uses: actions/upload-artifact@v4
+        with:
+          name: review-document
+          path: review-document.docx

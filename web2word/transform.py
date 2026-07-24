@@ -1,0 +1,67 @@
+"""Apply namespacing and link resolution to a single page's content soup."""
+
+from __future__ import annotations
+
+from bs4 import BeautifulSoup, Tag
+
+from .links import ScopeSet, namespace_anchor, resolve_link
+
+
+def transform_page(soup: BeautifulSoup, *, page_url: str, page_slug: str, scope: ScopeSet) -> BeautifulSoup:
+    """Namespace every id and rewrite every href in place. Returns the soup."""
+
+    # 1. Namespace every element id so anchors are globally unique after merge.
+    for el in soup.find_all(attrs={"id": True}):
+        el["id"] = namespace_anchor(page_slug, el["id"])
+
+    # 2. Wrap the whole page in a div carrying the page slug as its id. Pandoc
+    #    turns a div-with-id into a bookmark spanning the content, giving every
+    #    "link to top of this page" (fragment-less in-scope link) a real target.
+    #    An empty <span id> does NOT survive Pandoc, so a wrapper is required.
+    body = soup.body or soup
+    wrapper = soup.new_tag("div", id=page_slug)
+    for child in list(body.contents):
+        wrapper.append(child.extract())
+    body.append(wrapper)
+
+    # 3. Collect the ids that actually exist on this page (namespaced), so we can
+    #    detect same-page links that point at anchors we stripped as chrome
+    #    (e.g. Just the Docs' "Back to top" -> #top, which lives on the outer
+    #    page frame, not in #main-content).
+    present_ids = {el["id"] for el in wrapper.find_all(attrs={"id": True})}
+    present_ids.add(page_slug)
+    self_prefix = page_slug + "--"
+
+    # 3b. Resolve image sources to absolute URLs so Pandoc can fetch and embed
+    #     them (relative src like "images/foo.png" is otherwise unresolvable).
+    from urllib.parse import urljoin
+    for img in soup.find_all("img", src=True):
+        img["src"] = urljoin(page_url, img["src"])
+        img.attrs.pop("srcset", None)  # avoid relative candidates in srcset
+
+    # 4. Rewrite every link.
+    for a in soup.find_all("a", href=True):
+        resolved = resolve_link(a["href"], page_url=page_url, page_slug=page_slug, scope=scope)
+        if resolved is None:
+            continue
+        href = resolved.href
+        # Same-page internal target that doesn't exist -> fall back to page top,
+        # so a dangling in-page anchor still lands somewhere sensible instead of
+        # becoming a dead bookmark.
+        if resolved.internal and href.startswith("#"):
+            target = href[1:]
+            is_this_page = target == page_slug or target.startswith(self_prefix)
+            if is_this_page and target not in present_ids:
+                href = "#" + page_slug
+        a["href"] = href
+
+    return soup
+
+
+def merge(pages: list[BeautifulSoup]) -> str:
+    """Concatenate transformed page bodies into one HTML string for Pandoc."""
+    parts = []
+    for soup in pages:
+        body = soup.body or soup
+        parts.append(body.decode_contents() if isinstance(body, Tag) else str(body))
+    return "\n<div class=\"page-break\"></div>\n".join(parts)
