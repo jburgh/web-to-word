@@ -10,17 +10,8 @@ on:
     inputs:
       url:
         description: "Chapter landing-page URL (the tool finds its sub-pages automatically)"
-        required: false
+        required: true
         type: string
-      manifest:
-        description: "...or leave the URL blank and pick a saved review set"
-        required: false
-        type: choice
-        default: examples/before-you-deploy-chapter.yml
-        options:
-          - examples/before-you-deploy-chapter.yml
-          - examples/before-you-deploy.yml
-          - examples/data-processing.yml
 
 jobs:
   build:
@@ -44,18 +35,13 @@ jobs:
         run: python scripts/make_reference.py styles.docx
 
       - name: Convert to Word
-        # URL and manifest come in as env vars (not inlined into the script) to
-        # avoid shell-injection from the free-text URL input.
+        # URL comes in as an env var (not inlined into the script) to avoid
+        # shell-injection from the free-text input.
         env:
           URL: ${{ inputs.url }}
-          MANIFEST: ${{ inputs.manifest }}
         run: |
-          if [ -n "$URL" ]; then
-            python -m web2word "$URL" -o review-document.docx \
-              --save-manifest discovered-manifest.yml -v
-          else
-            python -m web2word "$MANIFEST" -o review-document.docx -v
-          fi
+          python -m web2word "$URL" -o review-document.docx \
+            --save-manifest discovered-manifest.yml -v
 
       - name: Verify links (fails if any internal link is dead)
         run: python scripts/verify.py review-document.docx
@@ -66,8 +52,7 @@ jobs:
           name: review-document
           path: review-document.docx
 
-      - name: Upload the discovered manifest (when a URL was used)
-        if: ${{ inputs.url != '' }}
+      - name: Upload the discovered manifest
         uses: actions/upload-artifact@v4
         with:
           name: discovered-manifest

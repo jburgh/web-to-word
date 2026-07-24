@@ -26,9 +26,8 @@ There are two ways to use it, depending on who you are.
 
 No terminal, no Python, no Pandoc, and **no YAML to edit** — paste a URL and go.
 The run also produces a `discovered-manifest.yml` artifact; if you want to keep a
-chapter as a named, reusable review set, commit that file to `examples/` and add
-it to the dropdown in `.github/workflows/build-docx.yml` (leaving the URL blank
-then picks it from the list).
+chapter as a named, reusable review set, commit that file to `examples/` and run
+it locally with `python -m web2word examples/<name>.yml`.
 
 ### For maintainers — locally
 

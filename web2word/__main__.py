@@ -68,6 +68,8 @@ def main(argv: list[str] | None = None) -> int:
     ap = argparse.ArgumentParser(prog="web2word", description=__doc__)
     ap.add_argument("source", help="a manifest .yml file, OR a chapter URL to auto-discover")
     ap.add_argument("-o", "--output", help="override output path")
+    ap.add_argument("--style-reference", metavar="PATH",
+                    help="reference .docx that controls fonts/styles (overrides the manifest)")
     ap.add_argument("--save-manifest", metavar="PATH",
                     help="when SOURCE is a URL, also write the discovered manifest here")
     ap.add_argument("-v", "--verbose", action="store_true")
@@ -77,6 +79,8 @@ def main(argv: list[str] | None = None) -> int:
     manifest = _manifest_from_url(args.source, args.verbose) if is_url else _load_manifest(args.source)
     if args.output:
         manifest.output = args.output
+    if args.style_reference:
+        manifest.style_reference = args.style_reference
 
     if is_url and args.save_manifest:
         from .discover import to_yaml
