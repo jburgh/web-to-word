@@ -37,14 +37,31 @@ class Manifest:
 def build(manifest: Manifest, *, verbose: bool = False) -> Path:
     urls = manifest.page_urls()
 
-    # Build the scope set first so links on page 1 can resolve to page 5.
+    # Load every page first. Skip (with a warning) any that fail to load so a
+    # single broken link in the source can't abort the whole document. Skipped
+    # pages are also left out of the scope set below, so links to them fall back
+    # to external URLs instead of becoming dead in-document bookmarks.
+    loaded: list[tuple[str, str, str]] = []   # (url, rel, raw_html)
+    for url, rel in zip(urls, manifest.pages):
+        try:
+            raw = read_local(str(Path(manifest.local_dir) / rel)) if manifest.local_dir else fetch(url)
+        except Exception as exc:
+            print(f"  WARNING: skipping {rel}: {exc}")
+            continue
+        loaded.append((url, rel, raw))
+
+    if not loaded:
+        raise SystemExit("web2word: no pages could be loaded; nothing to convert.")
+
+    # Build the scope set (from the pages that loaded) so links on page 1 can
+    # resolve to page 5.
     scope = ScopeSet()
     if manifest.public_host:
         origin = urlsplit(manifest.base_url)
         scope.rewrite_from = f"{origin.scheme}://{origin.netloc}"
         scope.rewrite_to = manifest.public_host.rstrip("/")
     slugs: list[str] = []
-    for url in urls:
+    for url, _rel, _raw in loaded:
         slug = slugify(url)
         # de-duplicate slugs across chapters
         base_slug, n = slug, 2
@@ -54,12 +71,11 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
         slugs.append(slug)
         scope.add(url, slug)
 
-    # Fetch, extract, transform each page.
+    # Extract + transform each loaded page.
     transformed = []
-    for url, rel, slug in zip(urls, manifest.pages, slugs):
+    for (url, rel, raw), slug in zip(loaded, slugs):
         if verbose:
             print(f"  processing {rel}  (slug: {slug})")
-        raw = read_local(str(Path(manifest.local_dir) / rel)) if manifest.local_dir else fetch(url)
         soup = extract_content(raw)
         soup = transform_page(soup, page_url=url, page_slug=slug, scope=scope)
         transformed.append(soup)

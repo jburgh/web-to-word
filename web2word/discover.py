@@ -13,6 +13,7 @@ then their children.
 
 from __future__ import annotations
 
+import sys
 from urllib.parse import urldefrag, urljoin, urlparse
 
 from .extract import extract_content, fetch
@@ -45,20 +46,26 @@ def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -
     start_url = urldefrag(start_url)[0]
     prefix = _child_prefix(start_url)
 
-    found = {canonical(start_url): start_url}
+    found: dict[str, str] = {}          # canonical -> url, only pages that LOAD
+    seen = {canonical(start_url)}       # everything ever queued (avoid re-queue)
     queue = [start_url]
     while queue and len(found) < max_pages:
         url = queue.pop(0)
         try:
             content = extract_content(fetch(url, timeout=timeout))
-        except Exception:
+        except Exception as exc:
+            # A broken/404 link (e.g. a malformed relative link in the source)
+            # was queued but doesn't exist. Warn and exclude it rather than
+            # letting it abort the whole build later.
+            print(f"  WARNING: skipping unreachable page {url} ({exc})", file=sys.stderr)
             continue
+        found[canonical(url)] = url     # confirmed to load -> include it
         for a in content.find_all("a", href=True):
             target = urldefrag(urljoin(url, a["href"]))[0]
             key = canonical(target)
-            if key in found or not _under_prefix(target, prefix):
+            if key in seen or not _under_prefix(target, prefix):
                 continue
-            found[key] = target
+            seen.add(key)
             queue.append(target)
 
     base = start_url.rsplit("/", 1)[0] + "/"
