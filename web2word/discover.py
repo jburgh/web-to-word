@@ -16,6 +16,8 @@ from __future__ import annotations
 import sys
 from urllib.parse import urldefrag, urljoin, urlparse
 
+from bs4 import BeautifulSoup
+
 from .extract import extract_content, fetch
 from .links import canonical
 
@@ -41,6 +43,30 @@ def _is_page_url(url: str) -> bool:
     if "." not in tail:
         return True
     return tail.rsplit(".", 1)[-1].lower() in ("html", "htm")
+
+
+def _nav_order(start_url: str, timeout: int) -> dict[str, int]:
+    """Map each chapter page's canonical URL to its position in the Just the Docs
+    sidebar nav — the site's real reading order (``nav_order``). Returns an empty
+    map if there's no recognizable nav, so callers fall back to path sorting."""
+    try:
+        soup = BeautifulSoup(fetch(start_url, timeout=timeout), "lxml")
+    except Exception:
+        return {}
+    nav = soup.select_one("nav#site-nav, nav.site-nav, #site-nav")
+    if nav is None:
+        return {}
+    prefix = _child_prefix(start_url)
+    start_c = canonical(start_url)
+    rank: dict[str, int] = {}
+    for a in nav.find_all("a", href=True):
+        full = urldefrag(urljoin(start_url, a["href"]))[0]
+        c = canonical(full)
+        if c in rank:
+            continue
+        if c == start_c or _under_prefix(full, prefix):
+            rank[c] = len(rank)
+    return rank
 
 
 def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -> list[str]:
@@ -78,9 +104,20 @@ def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -
             seen.add(key)
             queue.append(target)
 
+    # Order by the site's sidebar nav (true nav_order reading order). Any page
+    # not present in the nav falls back to a deterministic path sort, appended
+    # after the nav-ordered pages.
     base = start_url.rsplit("/", 1)[0] + "/"
-    # Sort by path relative to base so hierarchy/order is deterministic.
-    return sorted(found.values(), key=lambda u: u[len(base):] if u.startswith(base) else u)
+    rank = _nav_order(start_url, timeout)
+
+    def sort_key(u: str):
+        c = canonical(u)
+        if c in rank:
+            return (0, rank[c], "")
+        rel = u[len(base):] if u.startswith(base) else u
+        return (1, 0, rel)
+
+    return sorted(found.values(), key=sort_key)
 
 
 def build_manifest(start_url: str, *, output: str = "review-document.docx",
