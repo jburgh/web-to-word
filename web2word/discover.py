@@ -33,6 +33,16 @@ def _under_prefix(url: str, prefix: str) -> bool:
     return u.netloc == p.netloc and u.path.startswith(p.path.rstrip("/") + "/")
 
 
+# Extensions that are assets, not content pages. A URL is treated as a page if
+# it ends in .html/.htm or has no file extension (a clean/dir URL); anything with
+# a different extension (images, PDFs, CSS, ...) must never become a "page".
+def _is_page_url(url: str) -> bool:
+    tail = urlparse(url).path.rsplit("/", 1)[-1]
+    if "." not in tail:
+        return True
+    return tail.rsplit(".", 1)[-1].lower() in ("html", "htm")
+
+
 def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -> list[str]:
     """Return absolute page URLs of the chapter in reading order.
 
@@ -63,7 +73,7 @@ def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -
         for a in content.find_all("a", href=True):
             target = urldefrag(urljoin(url, a["href"]))[0]
             key = canonical(target)
-            if key in seen or not _under_prefix(target, prefix):
+            if key in seen or not _under_prefix(target, prefix) or not _is_page_url(target):
                 continue
             seen.add(key)
             queue.append(target)

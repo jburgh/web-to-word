@@ -34,6 +34,36 @@ class Manifest:
         return [urljoin(self.base_url, p) for p in self.pages]
 
 
+def _fail_on_dead_links(pages: list[tuple[str, "object"]]) -> None:
+    """Abort (with an actionable report) if any in-document link points at a
+    section anchor that doesn't exist — i.e. a link like `page.html#section`
+    where `#section` isn't on that page. Reported in human-readable terms
+    (source page, link text, target) rather than the Pandoc-hashed bookmark
+    name, so the broken source link can actually be found and fixed."""
+    present_ids = {
+        el["id"] for _url, soup in pages for el in soup.find_all(attrs={"id": True})
+    }
+    dead = []
+    for url, soup in pages:
+        for a in soup.find_all("a", href=True):
+            href = a["href"]
+            if href.startswith("#") and href[1:] not in present_ids:
+                slug, _, section = href[1:].partition("--")
+                dead.append((url, a.get_text(strip=True), slug, section))
+    if not dead:
+        return
+    lines = ["", f"ERROR: {len(dead)} broken in-document link(s) — the target section does not exist:"]
+    for url, text, slug, section in dead:
+        page = url.split("/docs/")[-1] if "/docs/" in url else url
+        lines.append(f"  - on {page}")
+        lines.append(f"      link text : {text!r}")
+        lines.append(f"      points to : page '{slug}', section '#{section or '(top)'}' — not found")
+    lines.append("")
+    lines.append("Fix the anchor in the source markdown (the '#section' must match a heading "
+                 "on the target page), then rebuild.")
+    raise SystemExit("\n".join(lines))
+
+
 def build(manifest: Manifest, *, verbose: bool = False) -> Path:
     urls = manifest.page_urls()
 
@@ -78,9 +108,11 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
             print(f"  processing {rel}  (slug: {slug})")
         soup = extract_content(raw)
         soup = transform_page(soup, page_url=url, page_slug=slug, scope=scope)
-        transformed.append(soup)
+        transformed.append((url, soup))
 
-    merged_html = merge(transformed)
+    _fail_on_dead_links(transformed)
+
+    merged_html = merge([soup for _url, soup in transformed])
 
     # Wrap for a clean standalone document.
     doc = f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{merged_html}</body></html>"
