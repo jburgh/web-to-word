@@ -45,58 +45,79 @@ def _is_page_url(url: str) -> bool:
     return tail.rsplit(".", 1)[-1].lower() in ("html", "htm")
 
 
-def _nav_order(start_url: str, timeout: int) -> dict[str, int]:
-    """Map each chapter page's canonical URL to its position in the Just the Docs
-    sidebar nav — the site's real reading order (``nav_order``). Returns an empty
-    map if there's no recognizable nav, so callers fall back to path sorting."""
+def _fetchable(url: str, timeout: int) -> bool:
     try:
-        soup = BeautifulSoup(fetch(start_url, timeout=timeout), "lxml")
+        fetch(url, timeout=timeout)
+        return True
     except Exception:
-        return {}
-    nav = soup.select_one("nav#site-nav, nav.site-nav, #site-nav")
+        return False
+
+
+def _resolve_landing(input_url: str, timeout: int) -> str:
+    """Pick a real page to start from. If ``<path>.html`` doesn't exist, fall
+    back to the "section landing lives inside its own directory" convention
+    (``<path>/<name>.html``) — e.g. entering
+    ``.../real-time-reporting`` finds ``.../real-time-reporting/real-time-reporting.html``."""
+    if _fetchable(input_url, timeout):
+        return input_url
+    stem = input_url[:-5] if input_url.endswith(".html") else input_url.rstrip("/")
+    name = stem.rsplit("/", 1)[-1]
+    alt = f"{stem}/{name}.html"
+    if _fetchable(alt, timeout):
+        return alt
+    return input_url
+
+
+def _nav_pages(raw_html: str, page_url: str, prefix: str, also: set[str]) -> list[str]:
+    """Pages listed in the Just the Docs sidebar nav that belong to this section,
+    in reading order (``nav_order``): everything under ``prefix`` plus any URL
+    whose canonical form is in ``also`` (the section landing / entered page).
+    The nav is the authoritative source of *which* pages a section contains — a
+    landing doesn't always link to its children in content. [] if there's no nav."""
+    nav = BeautifulSoup(raw_html, "lxml").select_one("nav#site-nav, nav.site-nav, #site-nav")
     if nav is None:
-        return {}
-    prefix = _child_prefix(start_url)
-    start_c = canonical(start_url)
-    rank: dict[str, int] = {}
+        return []
+    ordered: list[str] = []
+    seen: set[str] = set()
     for a in nav.find_all("a", href=True):
-        full = urldefrag(urljoin(start_url, a["href"]))[0]
+        full = urldefrag(urljoin(page_url, a["href"]))[0]
         c = canonical(full)
-        if c in rank:
+        if c in seen or not _is_page_url(full):
             continue
-        if c == start_c or _under_prefix(full, prefix):
-            rank[c] = len(rank)
-    return rank
+        if c in also or _under_prefix(full, prefix):
+            seen.add(c)
+            ordered.append(full)
+    return ordered
 
 
-def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -> list[str]:
-    """Return absolute page URLs of the chapter in reading order.
+def discover_pages(input_url: str, *, max_pages: int = 200, timeout: int = 30) -> list[str]:
+    """Return the section's page URLs in the site's reading order.
 
-    Breadth-first crawl of content links under the chapter's path prefix finds
-    every page (completeness). We then sort by path: because "." sorts before
-    "/", a parent page (``component-reference.html``) always precedes its
-    children (``component-reference/...``), and each subtree stays grouped.
-    Sibling order is alphabetical — a stable, predictable default; edit the
-    generated manifest if a specific chapter needs a different sequence.
+    The section is everything under the entered path's directory prefix. Pages
+    and their order come primarily from the Just the Docs sidebar nav (the site's
+    real ``nav_order``); a breadth-first content crawl adds any content-linked
+    page the nav omits. Unreachable links are skipped with a warning.
     """
-    start_url = urldefrag(start_url)[0]
-    prefix = _child_prefix(start_url)
+    input_url = urldefrag(input_url)[0]
+    prefix = _child_prefix(input_url)                     # the section directory
+    start = _resolve_landing(input_url, timeout)
+    also = {canonical(input_url), canonical(start)}       # landing / entered page
 
-    found: dict[str, str] = {}          # canonical -> url, only pages that LOAD
-    seen = {canonical(start_url)}       # everything ever queued (avoid re-queue)
-    queue = [start_url]
+    found: dict[str, str] = {}      # canonical -> url, only pages that LOAD
+    nav_urls: list[str] = []        # captured from the first page that has a nav
+    seen = set(also)
+    queue = [start]
     while queue and len(found) < max_pages:
         url = queue.pop(0)
         try:
-            content = extract_content(fetch(url, timeout=timeout))
+            raw = fetch(url, timeout=timeout)
         except Exception as exc:
-            # A broken/404 link (e.g. a malformed relative link in the source)
-            # was queued but doesn't exist. Warn and exclude it rather than
-            # letting it abort the whole build later.
             print(f"  WARNING: skipping unreachable page {url} ({exc})", file=sys.stderr)
             continue
-        found[canonical(url)] = url     # confirmed to load -> include it
-        for a in content.find_all("a", href=True):
+        if not nav_urls:
+            nav_urls = _nav_pages(raw, url, prefix, also)
+        found[canonical(url)] = url
+        for a in extract_content(raw).find_all("a", href=True):
             target = urldefrag(urljoin(url, a["href"]))[0]
             key = canonical(target)
             if key in seen or not _under_prefix(target, prefix) or not _is_page_url(target):
@@ -104,11 +125,13 @@ def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -
             seen.add(key)
             queue.append(target)
 
-    # Order by the site's sidebar nav (true nav_order reading order). Any page
-    # not present in the nav falls back to a deterministic path sort, appended
-    # after the nav-ordered pages.
-    base = start_url.rsplit("/", 1)[0] + "/"
-    rank = _nav_order(start_url, timeout)
+    rank = {canonical(u): i for i, u in enumerate(nav_urls)}
+    pages: dict[str, str] = dict(found)
+    for u in nav_urls:
+        pages.setdefault(canonical(u), u)                 # include nav-only pages
+    pages.setdefault(canonical(start), start)             # always include the landing
+
+    base = input_url.rsplit("/", 1)[0] + "/"
 
     def sort_key(u: str):
         c = canonical(u)
@@ -117,7 +140,7 @@ def discover_pages(start_url: str, *, max_pages: int = 200, timeout: int = 30) -
         rel = u[len(base):] if u.startswith(base) else u
         return (1, 0, rel)
 
-    return sorted(found.values(), key=sort_key)
+    return sorted(pages.values(), key=sort_key)
 
 
 def build_manifest(start_url: str, *, output: str = "review-document.docx",
