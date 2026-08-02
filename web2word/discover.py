@@ -143,11 +143,41 @@ def discover_pages(input_url: str, *, max_pages: int = 200, timeout: int = 30) -
     return sorted(pages.values(), key=sort_key)
 
 
+def discover_all(start_url: str, *, max_pages: int = 500, timeout: int = 30) -> list[str]:
+    """Every page in the whole guide, in reading order — for a full-guide export.
+
+    The guide has no single parent page (its top level is several sibling
+    chapters), but the sidebar nav lists every page in ``nav_order``. ``start_url``
+    only needs to be any page that renders the nav (e.g. the site home)."""
+    try:
+        raw = fetch(start_url, timeout=timeout)
+    except Exception:
+        return []
+    nav = BeautifulSoup(raw, "lxml").select_one("nav#site-nav, nav.site-nav, #site-nav")
+    if nav is None:
+        return []
+    host = urlparse(start_url).netloc
+    ordered: list[str] = []
+    seen: set[str] = set()
+    for a in nav.find_all("a", href=True):
+        full = urldefrag(urljoin(start_url, a["href"]))[0]
+        c = canonical(full)
+        if c in seen or not _is_page_url(full) or urlparse(full).netloc != host:
+            continue
+        seen.add(c)
+        ordered.append(full)
+        if len(ordered) >= max_pages:
+            break
+    return ordered
+
+
 def build_manifest(start_url: str, *, output: str = "review-document.docx",
-                   style_reference: str = "styles.docx", **kw) -> dict:
-    """Discover pages and return a manifest dict (base_url + relative pages)."""
-    urls = discover_pages(start_url, **kw)
-    base_url = start_url.rsplit("/", 1)[0] + "/"
+                   style_reference: str = "styles.docx", whole_guide: bool = False,
+                   **kw) -> dict:
+    """Discover pages and return a manifest dict (base_url + relative pages).
+    With ``whole_guide=True``, include the entire guide (every nav page)."""
+    urls = discover_all(start_url, **kw) if whole_guide else discover_pages(start_url, **kw)
+    base_url = start_url if start_url.endswith("/") else start_url.rsplit("/", 1)[0] + "/"
     pages = [u[len(base_url):] if u.startswith(base_url) else u for u in urls]
     return {
         "base_url": base_url,

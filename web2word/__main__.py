@@ -51,11 +51,11 @@ def _mini_yaml(text: str) -> dict:
     return data
 
 
-def _manifest_from_url(url: str, verbose: bool) -> Manifest:
+def _manifest_from_url(url: str, verbose: bool, whole_guide: bool = False) -> Manifest:
     from .discover import build_manifest as discover_manifest
     if verbose:
-        print(f"discovering pages under {url} ...")
-    data = discover_manifest(url)
+        print(f"discovering {'the whole guide from' if whole_guide else 'pages under'} {url} ...")
+    data = discover_manifest(url, whole_guide=whole_guide)
     return Manifest(
         base_url=data["base_url"],
         pages=data["pages"],
@@ -73,13 +73,17 @@ def main(argv: list[str] | None = None) -> int:
     ap.add_argument("--public-host", metavar="ORIGIN",
                     help="public origin (e.g. https://example.github.io) to rewrite "
                          "out-of-scope links to when crawling a local build (localhost)")
+    ap.add_argument("--whole-guide", action="store_true",
+                    help="export the entire guide (every page in the site nav); SOURCE is "
+                         "any page that renders the nav, e.g. the site home URL")
     ap.add_argument("--save-manifest", metavar="PATH",
                     help="when SOURCE is a URL, also write the discovered manifest here")
     ap.add_argument("-v", "--verbose", action="store_true")
     args = ap.parse_args(argv)
 
     is_url = args.source.lower().startswith(("http://", "https://"))
-    manifest = _manifest_from_url(args.source, args.verbose) if is_url else _load_manifest(args.source)
+    manifest = (_manifest_from_url(args.source, args.verbose, args.whole_guide)
+                if is_url else _load_manifest(args.source))
     if args.output:
         manifest.output = args.output
     if args.style_reference:
