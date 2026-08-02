@@ -6,6 +6,12 @@ from bs4 import BeautifulSoup, Tag
 
 from .links import ScopeSet, namespace_anchor, resolve_link
 
+# Tags whose id Pandoc reliably turns into a Word bookmark. For an id on any
+# OTHER element (dt, dd, li, td, p, ...), Pandoc drops the bookmark, so links to
+# it die — e.g. every glossary <dt id="kubernetes"> anchor. The fix is to move
+# such ids onto a prepended invisible anchor span, which Pandoc does keep.
+_BOOKMARKABLE_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "div", "span", "a", "table"}
+
 
 def transform_page(soup: BeautifulSoup, *, page_url: str, page_slug: str, scope: ScopeSet) -> BeautifulSoup:
     """Namespace every id and rewrite every href in place. Returns the soup."""
@@ -13,6 +19,17 @@ def transform_page(soup: BeautifulSoup, *, page_url: str, page_slug: str, scope:
     # 1. Namespace every element id so anchors are globally unique after merge.
     for el in soup.find_all(attrs={"id": True}):
         el["id"] = namespace_anchor(page_slug, el["id"])
+
+    # 1b. Preserve anchors Pandoc would otherwise drop: move the id from a
+    #     non-bookmarkable element onto a prepended zero-width-space anchor span.
+    for el in soup.find_all(attrs={"id": True}):
+        if el.name in _BOOKMARKABLE_TAGS:
+            continue
+        anchor = soup.new_tag("span")
+        anchor["id"] = el["id"]
+        anchor.string = "\u200b"  # zero-width space: invisible but non-empty
+        del el["id"]
+        el.insert(0, anchor)
 
     # 2. Wrap the whole page in a div carrying the page slug as its id. Pandoc
     #    turns a div-with-id into a bookmark spanning the content, giving every
