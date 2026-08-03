@@ -12,6 +12,13 @@ from .links import ScopeSet, namespace_anchor, resolve_link
 # such ids onto a prepended invisible anchor span, which Pandoc does keep.
 _BOOKMARKABLE_TAGS = {"h1", "h2", "h3", "h4", "h5", "h6", "div", "span", "a", "table"}
 
+# List/table container tags. Their ids are structural and auto-generated (e.g.
+# the "On this page" list's markdown-toc id) — not authored link targets, so we
+# leave them alone. Anchoring them isn't needed (the section heading carries the
+# anchor) and prepending into one creates a phantom item, e.g. an empty "1."
+# above an "On this page" list.
+_CONTAINER_TAGS = {"ol", "ul", "dl", "table", "thead", "tbody", "tfoot", "tr", "colgroup"}
+
 
 def transform_page(soup: BeautifulSoup, *, page_url: str, page_slug: str, scope: ScopeSet) -> BeautifulSoup:
     """Namespace every id and rewrite every href in place. Returns the soup."""
@@ -23,7 +30,7 @@ def transform_page(soup: BeautifulSoup, *, page_url: str, page_slug: str, scope:
     # 1b. Preserve anchors Pandoc would otherwise drop: move the id from a
     #     non-bookmarkable element onto a prepended zero-width-space anchor span.
     for el in soup.find_all(attrs={"id": True}):
-        if el.name in _BOOKMARKABLE_TAGS:
+        if el.name in _BOOKMARKABLE_TAGS or el.name in _CONTAINER_TAGS:
             continue
         anchor = soup.new_tag("span")
         anchor["id"] = el["id"]
