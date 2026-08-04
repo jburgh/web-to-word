@@ -34,6 +34,25 @@ class Manifest:
         return [urljoin(self.base_url, p) for p in self.pages]
 
 
+def _build_toc(pages: list[tuple[str, str, "object"]]) -> str:
+    """A static table of contents for a multi-page document: one entry per page,
+    linking to its H1 via a real in-document bookmark. A page break follows so
+    the content starts on a fresh page. Uses plain hyperlinks — not Word's
+    field-based TOC, which rebuilds from heading styles and breaks easily."""
+    import html as _html
+
+    items = []
+    for _url, slug, soup in pages:
+        h1 = soup.find("h1")
+        title = h1.get_text(strip=True) if h1 else slug
+        target = h1.get("id") if (h1 and h1.get("id")) else slug
+        items.append(f'<li><a href="#{target}">{_html.escape(title)}</a></li>')
+
+    return ('<h1>Contents</h1>\n<ul>\n'
+            + "\n".join(items)
+            + '\n</ul>\n<div class="page-break"></div>\n')
+
+
 def _fail_on_dead_links(pages: list[tuple[str, "object"]]) -> None:
     """Abort (with an actionable report) if any in-document link points at a
     section anchor that doesn't exist — i.e. a link like `page.html#section`
@@ -108,11 +127,16 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
             print(f"  processing {rel}  (slug: {slug})")
         soup = extract_content(raw)
         soup = transform_page(soup, page_url=url, page_slug=slug, scope=scope)
-        transformed.append((url, soup))
+        transformed.append((url, slug, soup))
 
-    _fail_on_dead_links(transformed)
+    _fail_on_dead_links([(url, soup) for url, _slug, soup in transformed])
 
-    merged_html = merge([soup for _url, soup in transformed])
+    merged_html = merge([soup for _url, _slug, soup in transformed])
+
+    # For a multi-page document, prepend a static table of contents linking to
+    # each page's H1 (real in-document bookmarks, not Word's fragile TOC field).
+    if len(transformed) > 1:
+        merged_html = _build_toc(transformed) + merged_html
 
     # Wrap for a clean standalone document.
     doc = f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{merged_html}</body></html>"
