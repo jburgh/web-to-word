@@ -150,6 +150,50 @@ def _map_callouts(container) -> None:
             _make_callout(el, style, label=label)
 
 
+# Just the Docs badge color class -> reference-doc character style. A plain
+# `.label` with no color class falls back to gray.
+_BADGE_STYLES = {
+    "label-green": "BadgeGreen",
+    "label-yellow": "BadgeYellow",
+    "label-red": "BadgeRed",
+    "label-purple": "BadgePurple",
+    "label-blue": "BadgeBlue",
+}
+
+
+def _map_inline_ui(container) -> None:
+    """Style two Just the Docs UI elements for the Word doc:
+
+    - Tooltips (`<span class="glossary-term">…<button …>term</button>…</span>`):
+      replaced with the term text in a distinct "defined-term" style. The tooltip
+      can't function in a docx, but the styling signals that the term has an
+      in-place definition.
+    - Badges (`<p class="label label-green">…</p>`): the text is shaded with the
+      matching label color (gray when no color class is given).
+    """
+    from bs4 import BeautifulSoup as _BS
+    dummy = _BS("", "lxml")
+
+    def _restyle(el, style, *, source=None, replace=False):
+        wrapper = dummy.new_tag("span")
+        wrapper["custom-style"] = style
+        for child in list((source or el).contents):
+            wrapper.append(child.extract())
+        if replace:
+            el.replace_with(wrapper)
+        else:
+            el.append(wrapper)
+
+    for term in container.select("span.glossary-term"):
+        trigger = term.select_one(".glossary-term__trigger")
+        _restyle(term, "GlossaryTerm", source=trigger or term, replace=True)
+
+    for badge in container.select("p.label, span.label, div.label"):
+        classes = badge.get("class", [])
+        style = next((_BADGE_STYLES[c] for c in classes if c in _BADGE_STYLES), "BadgeGray")
+        _restyle(badge, style)
+
+
 def extract_content(html: str) -> BeautifulSoup:
     """Return a soup containing just the main content region, chrome removed."""
     soup = BeautifulSoup(html, "lxml")
@@ -161,6 +205,10 @@ def extract_content(html: str) -> BeautifulSoup:
             break
     if container is None:
         container = soup.body or soup
+
+    # Map tooltips/badges BEFORE chrome removal: the tooltip term lives inside a
+    # <button>, which the chrome pass strips — so capture it first.
+    _map_inline_ui(container)
 
     for sel in CHROME_SELECTORS:
         for el in container.select(sel):

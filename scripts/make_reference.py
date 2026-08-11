@@ -48,6 +48,22 @@ CALLOUTS = {
     "Highlight": ("F1E9EE", "A1518B"),  # purple (no label)
 }
 
+# Just the Docs badge/label colors (see the site's .label-* classes), as
+# character styles that shade just the badge text. (fill, text color). An
+# undefined color (plain .label) falls back to gray.
+BADGES = {
+    "BadgeGray":   ("D9D9D9", "1A1A1A"),
+    "BadgeGreen":  ("9ACC54", "1A1A1A"),
+    "BadgeYellow": ("F1C577", "44434D"),
+    "BadgeRed":    ("CB3E6E", "FFFFFF"),
+    "BadgePurple": ("D7B7CE", "1A1A1A"),
+    "BadgeBlue":   ("2C7BB6", "FFFFFF"),
+}
+# Color for the "defined-term" (tooltip) character style — distinct from body
+# text and from hyperlinks (which are solid-underlined CDC blue) via a dotted
+# underline, so reviewers can see which terms carry an in-place definition.
+GLOSSARY_TERM_COLOR = "0B6E6E"  # teal
+
 
 def _default_reference() -> bytes:
     return subprocess.run(
@@ -195,6 +211,28 @@ def _sourcecode_style() -> str:
     )
 
 
+def _badge_style(style_id: str, fill: str, text: str) -> str:
+    return (
+        f'<w:style w:type="character" w:customStyle="1" w:styleId="{style_id}">'
+        f'<w:name w:val="{style_id}" /><w:qFormat />'
+        f'<w:rPr><w:shd w:val="clear" w:color="auto" w:fill="{fill}" />'
+        f'<w:color w:val="{text}" /></w:rPr>'
+        f'</w:style>'
+    )
+
+
+def _glossary_term_style() -> str:
+    # A defined term (tooltip): teal text + dotted underline, so it's clearly
+    # distinct from body text and from solid-underlined hyperlinks.
+    return (
+        '<w:style w:type="character" w:customStyle="1" w:styleId="GlossaryTerm">'
+        '<w:name w:val="GlossaryTerm" /><w:qFormat />'
+        f'<w:rPr><w:color w:val="{GLOSSARY_TERM_COLOR}" />'
+        '<w:u w:val="dotted" /></w:rPr>'
+        '</w:style>'
+    )
+
+
 def _patch_styles(xml: str) -> str:
     xml = _patch_body_size(xml)           # 11pt body text
     xml = _patch_heading_colors(xml)      # near-black headings
@@ -249,10 +287,14 @@ def _patch_styles(xml: str) -> str:
         _patch_table, xml, flags=re.S,
     )
 
-    # Inject callout + code-block paragraph styles before the closing tag.
-    extra_xml = "".join(
-        _callout_style(sid, fill, bar) for sid, (fill, bar) in CALLOUTS.items()
-    ) + _sourcecode_style()
+    # Inject callout + code-block paragraph styles and badge/term character
+    # styles before the closing tag.
+    extra_xml = (
+        "".join(_callout_style(sid, fill, bar) for sid, (fill, bar) in CALLOUTS.items())
+        + _sourcecode_style()
+        + "".join(_badge_style(sid, fill, text) for sid, (fill, text) in BADGES.items())
+        + _glossary_term_style()
+    )
     xml = xml.replace("</w:styles>", extra_xml + "</w:styles>")
     return xml
 
@@ -274,7 +316,7 @@ def _verify(theme_xml: str, styles_xml: str) -> None:
         problems.append(f"hyperlink color #{LINK_COLOR} not applied")
     if "<w:u " not in styles_xml:
         problems.append("hyperlink underline not applied")
-    for sid in (*CALLOUTS, "SourceCode"):
+    for sid in (*CALLOUTS, "SourceCode", *BADGES, "GlossaryTerm"):
         if f'w:styleId="{sid}"' not in styles_xml:
             problems.append(f"style '{sid}' missing")
     if "<w:tblBorders>" not in styles_xml:
