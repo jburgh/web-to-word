@@ -34,23 +34,52 @@ class Manifest:
         return [urljoin(self.base_url, p) for p in self.pages]
 
 
-def _build_toc(pages: list[tuple[str, str, "object"]]) -> str:
+def _build_toc(pages: list[tuple[str, str, "object"]], base_url: str) -> str:
     """A static table of contents for a multi-page document: one entry per page,
-    linking to its H1 via a real in-document bookmark. A page break follows so
-    the content starts on a fresh page. Uses plain hyperlinks — not Word's
-    field-based TOC, which rebuilds from heading styles and breaks easily."""
+    linking to its H1 via a real in-document bookmark, indented by the page's
+    depth in the site path (so sub-pages nest under their section). A page break
+    follows so the content starts on a fresh page. Uses a plain nested list — not
+    Word's field-based TOC, which rebuilds from heading styles and breaks easily."""
     import html as _html
 
-    items = []
-    for _url, slug, soup in pages:
+    def _depth(url: str) -> int:
+        rel = url[len(base_url):] if url.startswith(base_url) else url
+        rel = re.sub(r"\.html?$", "", rel).strip("/")
+        return rel.count("/") if rel else 0
+
+    depths = [_depth(url) for url, _slug, _soup in pages]
+    floor = min(depths) if depths else 0
+
+    entries = []
+    for (url, slug, soup), depth in zip(pages, depths):
         h1 = soup.find("h1")
         title = h1.get_text(strip=True) if h1 else slug
         target = h1.get("id") if (h1 and h1.get("id")) else slug
-        items.append(f'<li><a href="#{target}">{_html.escape(title)}</a></li>')
+        entries.append((depth - floor, f'<a href="#{target}">{_html.escape(title)}</a>'))
 
-    return ('<h1>Contents</h1>\n<ul>\n'
-            + "\n".join(items)
-            + '\n</ul>\n<div class="page-break"></div>\n')
+    # Build a nested <ul> from the per-entry levels. Level increases are clamped
+    # to +1 so the nesting stays valid even if the path depth jumps.
+    out: list[str] = []
+    cur = -1
+    for level, link in entries:
+        level = min(level, cur + 1)
+        if level > cur:
+            out.append("<ul>")
+        else:
+            out.append("</li>")
+            while cur > level:
+                out.append("</ul></li>")
+                cur -= 1
+        out.append(f"<li>{link}")
+        cur = level
+    while cur >= 0:
+        out.append("</li>")
+        if cur > 0:
+            out.append("</ul>")
+        cur -= 1
+    out.append("</ul>")
+
+    return '<h1>Contents</h1>\n' + "".join(out) + '\n<div class="page-break"></div>\n'
 
 
 def _fail_on_dead_links(pages: list[tuple[str, "object"]]) -> None:
@@ -136,7 +165,7 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
     # For a multi-page document, prepend a static table of contents linking to
     # each page's H1 (real in-document bookmarks, not Word's fragile TOC field).
     if len(transformed) > 1:
-        merged_html = _build_toc(transformed) + merged_html
+        merged_html = _build_toc(transformed, manifest.base_url) + merged_html
 
     # Wrap for a clean standalone document.
     doc = f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{merged_html}</body></html>"
