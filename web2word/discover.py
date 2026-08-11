@@ -14,7 +14,7 @@ then their children.
 from __future__ import annotations
 
 import sys
-from urllib.parse import urldefrag, urljoin, urlparse
+from urllib.parse import urldefrag, urljoin, urlparse, urlunparse
 
 from bs4 import BeautifulSoup
 
@@ -45,27 +45,28 @@ def _is_page_url(url: str) -> bool:
     return tail.rsplit(".", 1)[-1].lower() in ("html", "htm")
 
 
-def _fetchable(url: str, timeout: int) -> bool:
-    try:
-        fetch(url, timeout=timeout)
-        return True
-    except Exception:
-        return False
-
-
-def _resolve_landing(input_url: str, timeout: int) -> str:
-    """Pick a real page to start from. If ``<path>.html`` doesn't exist, fall
-    back to the "section landing lives inside its own directory" convention
-    (``<path>/<name>.html``) — e.g. entering
-    ``.../real-time-reporting`` finds ``.../real-time-reporting/real-time-reporting.html``."""
-    if _fetchable(input_url, timeout):
-        return input_url
+def _nav_source(input_url: str, timeout: int) -> tuple[str | None, str | None]:
+    """Return ``(url, raw_html)`` of a page that renders the sidebar nav, so a
+    section's pages can be read from it. The nav is identical on every page, so
+    when the entered ``<path>.html`` doesn't exist (a section whose landing has
+    an arbitrary name, e.g. ``microservices-deployment`` ->
+    ``.../deploy-nbs7-microservices.html``), fall back to the inside-directory
+    landing and then the nearest fetchable ancestor page."""
+    candidates = [input_url]
     stem = input_url[:-5] if input_url.endswith(".html") else input_url.rstrip("/")
-    name = stem.rsplit("/", 1)[-1]
-    alt = f"{stem}/{name}.html"
-    if _fetchable(alt, timeout):
-        return alt
-    return input_url
+    candidates.append(f"{stem}/{stem.rsplit('/', 1)[-1]}.html")  # inside-dir landing
+    p = urlparse(input_url)
+    segs = p.path.split("/")                                     # walk up ancestors
+    for i in range(len(segs) - 2, 0, -1):
+        anc = "/".join(segs[:i + 1])
+        candidates.append(urlunparse((p.scheme, p.netloc, anc + ".html", "", "", "")))
+        candidates.append(urlunparse((p.scheme, p.netloc, anc + "/", "", "", "")))
+    for url in candidates:
+        try:
+            return url, fetch(url, timeout=timeout)
+        except Exception:
+            continue
+    return None, None
 
 
 def _nav_pages(raw_html: str, page_url: str, prefix: str, also: set[str]) -> list[str]:
@@ -100,24 +101,27 @@ def discover_pages(input_url: str, *, max_pages: int = 200, timeout: int = 30) -
     """
     input_url = urldefrag(input_url)[0]
     prefix = _child_prefix(input_url)                     # the section directory
-    start = _resolve_landing(input_url, timeout)
-    also = {canonical(input_url), canonical(start)}       # landing / entered page
+    also = {canonical(input_url)}                         # the entered page, if it's a page
 
-    found: dict[str, str] = {}      # canonical -> url, only pages that LOAD
-    nav_urls: list[str] = []        # captured from the first page that has a nav
-    seen = set(also)
-    queue = [start]
+    # The nav (from the entered page or a fetchable ancestor) is the source of
+    # truth for which pages belong to the section and their reading order.
+    nav_source_url, nav_raw = _nav_source(input_url, timeout)
+    nav_urls = _nav_pages(nav_raw, nav_source_url, prefix, also) if nav_raw else []
+
+    # Crawl the section (seeded from the nav pages) to add any content-linked
+    # page the nav omits; fall back to the entered URL when there's no nav.
+    found: dict[str, str] = {}
+    seen = set(also) | {canonical(u) for u in nav_urls}
+    queue = list(nav_urls) if nav_urls else [input_url]
     while queue and len(found) < max_pages:
         url = queue.pop(0)
         try:
-            raw = fetch(url, timeout=timeout)
+            content = extract_content(fetch(url, timeout=timeout))
         except Exception as exc:
             print(f"  WARNING: skipping unreachable page {url} ({exc})", file=sys.stderr)
             continue
-        if not nav_urls:
-            nav_urls = _nav_pages(raw, url, prefix, also)
         found[canonical(url)] = url
-        for a in extract_content(raw).find_all("a", href=True):
+        for a in content.find_all("a", href=True):
             target = urldefrag(urljoin(url, a["href"]))[0]
             key = canonical(target)
             if key in seen or not _under_prefix(target, prefix) or not _is_page_url(target):
@@ -129,7 +133,6 @@ def discover_pages(input_url: str, *, max_pages: int = 200, timeout: int = 30) -
     pages: dict[str, str] = dict(found)
     for u in nav_urls:
         pages.setdefault(canonical(u), u)                 # include nav-only pages
-    pages.setdefault(canonical(start), start)             # always include the landing
 
     base = input_url.rsplit("/", 1)[0] + "/"
 
