@@ -34,16 +34,17 @@ class Manifest:
         return [urljoin(self.base_url, p) for p in self.pages]
 
 
-def _nav_levels(raw_html: str, page_url: str) -> dict[str, int]:
-    """Map each page's canonical URL to its nesting depth in the sidebar nav.
-    The nav nesting reflects the true front-matter hierarchy (parent/grand_parent),
-    which the folder layout does not — some landing pages sit beside their
-    children, others inside their folder. Empty if there's no recognizable nav."""
+def _nav_info(raw_html: str, page_url: str) -> dict[str, tuple[int, str]]:
+    """Map each page's canonical URL to ``(nesting depth, nav title)`` from the
+    sidebar nav. The nesting reflects the true front-matter hierarchy
+    (parent/grand_parent), which the folder layout does not — some landing pages
+    sit beside their children, others inside their folder. The title is the short
+    nav label (front-matter ``title``). Empty if there's no recognizable nav."""
     from bs4 import BeautifulSoup
     nav = BeautifulSoup(raw_html, "lxml").select_one("nav#site-nav, nav.site-nav, #site-nav")
     if nav is None:
         return {}
-    levels: dict[str, int] = {}
+    info: dict[str, tuple[int, str]] = {}
     for a in nav.find_all("a", href=True):
         depth = 0
         for parent in a.parents:
@@ -52,17 +53,18 @@ def _nav_levels(raw_html: str, page_url: str) -> dict[str, int]:
             if parent.name == "ul":
                 depth += 1
         full = urldefrag(urljoin(page_url, a["href"]))[0]
-        levels.setdefault(canonical(full), depth)
-    return levels
+        info.setdefault(canonical(full), (depth, a.get_text(strip=True)))
+    return info
 
 
 def _build_toc(pages: list[tuple[str, str, "object"]], base_url: str,
-               nav_levels: dict[str, int]) -> str:
+               nav_info: dict[str, tuple[int, str]]) -> str:
     """A static table of contents for a multi-page document: one entry per page,
-    linking to its H1 via a real in-document bookmark, indented by the page's
-    place in the site's nav hierarchy (front-matter based). A page break follows
-    so the content starts on a fresh page. Uses a plain nested list — not Word's
-    field-based TOC, which rebuilds from heading styles and breaks easily."""
+    labeled with its short nav title and linking to its H1 via a real in-document
+    bookmark, indented by the page's place in the site's nav hierarchy
+    (front-matter based). A page break follows so the content starts on a fresh
+    page. Uses a plain nested list — not Word's field-based TOC, which rebuilds
+    from heading styles and breaks easily."""
     import html as _html
 
     def _path_depth(url: str) -> int:
@@ -72,8 +74,8 @@ def _build_toc(pages: list[tuple[str, str, "object"]], base_url: str,
 
     # Prefer the nav's hierarchy; fall back to path depth only if the nav doesn't
     # cover every page (e.g. a hand-written manifest), to keep one consistent scale.
-    if nav_levels and all(canonical(u) in nav_levels for u, _s, _soup in pages):
-        depths = [nav_levels[canonical(u)] for u, _s, _soup in pages]
+    if nav_info and all(canonical(u) in nav_info for u, _s, _soup in pages):
+        depths = [nav_info[canonical(u)][0] for u, _s, _soup in pages]
     else:
         depths = [_path_depth(u) for u, _s, _soup in pages]
     floor = min(depths) if depths else 0
@@ -81,7 +83,9 @@ def _build_toc(pages: list[tuple[str, str, "object"]], base_url: str,
     entries = []
     for (url, slug, soup), depth in zip(pages, depths):
         h1 = soup.find("h1")
-        title = h1.get_text(strip=True) if h1 else slug
+        # Label with the short nav title; fall back to the H1, then the slug.
+        nav_title = nav_info.get(canonical(url), (0, ""))[1]
+        title = nav_title or (h1.get_text(strip=True) if h1 else slug)
         target = h1.get("id") if (h1 and h1.get("id")) else slug
         entries.append((depth - floor, f'<a href="#{target}">{_html.escape(title)}</a>'))
 
@@ -195,8 +199,8 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
     # Nesting comes from the sidebar nav (front-matter hierarchy), read from any
     # loaded page's raw HTML.
     if len(transformed) > 1:
-        nav_levels = _nav_levels(loaded[0][2], loaded[0][0])
-        merged_html = _build_toc(transformed, manifest.base_url, nav_levels) + merged_html
+        nav_info = _nav_info(loaded[0][2], loaded[0][0])
+        merged_html = _build_toc(transformed, manifest.base_url, nav_info) + merged_html
 
     # Wrap for a clean standalone document.
     doc = f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{merged_html}</body></html>"
