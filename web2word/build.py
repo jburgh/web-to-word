@@ -6,10 +6,10 @@ import re
 import subprocess
 from dataclasses import dataclass
 from pathlib import Path
-from urllib.parse import urljoin, urlsplit
+from urllib.parse import urldefrag, urljoin, urlsplit
 
 from .extract import extract_content, fetch, read_local
-from .links import ScopeSet
+from .links import ScopeSet, canonical
 from .transform import merge, transform_page
 
 
@@ -34,20 +34,48 @@ class Manifest:
         return [urljoin(self.base_url, p) for p in self.pages]
 
 
-def _build_toc(pages: list[tuple[str, str, "object"]], base_url: str) -> str:
+def _nav_levels(raw_html: str, page_url: str) -> dict[str, int]:
+    """Map each page's canonical URL to its nesting depth in the sidebar nav.
+    The nav nesting reflects the true front-matter hierarchy (parent/grand_parent),
+    which the folder layout does not — some landing pages sit beside their
+    children, others inside their folder. Empty if there's no recognizable nav."""
+    from bs4 import BeautifulSoup
+    nav = BeautifulSoup(raw_html, "lxml").select_one("nav#site-nav, nav.site-nav, #site-nav")
+    if nav is None:
+        return {}
+    levels: dict[str, int] = {}
+    for a in nav.find_all("a", href=True):
+        depth = 0
+        for parent in a.parents:
+            if parent is nav:
+                break
+            if parent.name == "ul":
+                depth += 1
+        full = urldefrag(urljoin(page_url, a["href"]))[0]
+        levels.setdefault(canonical(full), depth)
+    return levels
+
+
+def _build_toc(pages: list[tuple[str, str, "object"]], base_url: str,
+               nav_levels: dict[str, int]) -> str:
     """A static table of contents for a multi-page document: one entry per page,
     linking to its H1 via a real in-document bookmark, indented by the page's
-    depth in the site path (so sub-pages nest under their section). A page break
-    follows so the content starts on a fresh page. Uses a plain nested list — not
-    Word's field-based TOC, which rebuilds from heading styles and breaks easily."""
+    place in the site's nav hierarchy (front-matter based). A page break follows
+    so the content starts on a fresh page. Uses a plain nested list — not Word's
+    field-based TOC, which rebuilds from heading styles and breaks easily."""
     import html as _html
 
-    def _depth(url: str) -> int:
+    def _path_depth(url: str) -> int:
         rel = url[len(base_url):] if url.startswith(base_url) else url
         rel = re.sub(r"\.html?$", "", rel).strip("/")
         return rel.count("/") if rel else 0
 
-    depths = [_depth(url) for url, _slug, _soup in pages]
+    # Prefer the nav's hierarchy; fall back to path depth only if the nav doesn't
+    # cover every page (e.g. a hand-written manifest), to keep one consistent scale.
+    if nav_levels and all(canonical(u) in nav_levels for u, _s, _soup in pages):
+        depths = [nav_levels[canonical(u)] for u, _s, _soup in pages]
+    else:
+        depths = [_path_depth(u) for u, _s, _soup in pages]
     floor = min(depths) if depths else 0
 
     entries = []
@@ -164,8 +192,11 @@ def build(manifest: Manifest, *, verbose: bool = False) -> Path:
 
     # For a multi-page document, prepend a static table of contents linking to
     # each page's H1 (real in-document bookmarks, not Word's fragile TOC field).
+    # Nesting comes from the sidebar nav (front-matter hierarchy), read from any
+    # loaded page's raw HTML.
     if len(transformed) > 1:
-        merged_html = _build_toc(transformed, manifest.base_url) + merged_html
+        nav_levels = _nav_levels(loaded[0][2], loaded[0][0])
+        merged_html = _build_toc(transformed, manifest.base_url, nav_levels) + merged_html
 
     # Wrap for a clean standalone document.
     doc = f"<!DOCTYPE html><html><head><meta charset='utf-8'></head><body>{merged_html}</body></html>"
